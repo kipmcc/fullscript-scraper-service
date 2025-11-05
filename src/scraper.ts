@@ -362,30 +362,33 @@ export class FullscriptScraper {
     if (!this.page) throw new Error('Browser not initialized');
 
     try {
-      // Look for next page button (Fullscript pagination)
-      // Structure: <button class="w-8 h-8 flex items-center justify-center border border-gray-200 rounded-lg" aria-label="Next page">
-      const nextButton = await this.page.$('button[aria-label="Next page"]');
+      // Fullscript uses "Load more" button instead of traditional pagination
+      // Structure: <button class="inline-flex ...">Load more</button>
+      const loadMoreButton = await this.page.$('button:has-text("Load more"), button:has-text("load more")');
 
-      if (!nextButton) {
-        console.log('[Scraper] No next page button found');
+      if (!loadMoreButton) {
+        console.log('[Scraper] No "Load more" button found - all products loaded');
         return false;
       }
 
-      const isDisabled = await nextButton.evaluate((el) =>
-        el.hasAttribute('disabled') || el.classList.contains('disabled')
+      const isDisabled = await loadMoreButton.evaluate((el) =>
+        el.hasAttribute('disabled') || el.classList.contains('disabled') ||
+        el.getAttribute('aria-disabled') === 'true'
       );
 
       if (isDisabled) {
-        console.log('[Scraper] Next page button is disabled');
+        console.log('[Scraper] "Load more" button is disabled - all products loaded');
         return false;
       }
 
-      console.log('[Scraper] Clicking next page...');
-      await nextButton.click();
-      await randomDelay(2000, 3000);
+      console.log('[Scraper] Clicking "Load more" button...');
+      await loadMoreButton.click();
+      await randomDelay(2000, 4000); // Wait for new products to load
 
-      // Wait for page to update
-      await this.page.waitForLoadState('domcontentloaded');
+      // Wait for page to update with new products
+      await this.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+        console.log('[Scraper] Network idle timeout (expected with dynamic loading)');
+      });
 
       return true;
     } catch (error) {
