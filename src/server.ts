@@ -36,7 +36,7 @@ interface ScrapeRequest {
 /**
  * Health check endpoint
  */
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'healthy',
     service: 'fullscript-scraper',
@@ -120,14 +120,14 @@ app.post('/scrape', async (req: Request, res: Response) => {
 
     // Return result
     if (result.success) {
-      res.json({
+      return res.json({
         success: true,
         import_id: result.importId,
         total_products: result.totalScraped,
         message: 'Scraping completed successfully',
       });
     } else {
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         import_id: result.importId,
         total_products: result.totalScraped,
@@ -149,7 +149,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
 /**
  * Test endpoint (returns mock data for testing)
  */
-app.get('/test', (req: Request, res: Response) => {
+app.get('/test', (_req: Request, res: Response) => {
   res.json({
     message: 'Fullscript Scraper Service is running',
     endpoints: {

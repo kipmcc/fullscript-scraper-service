@@ -7,7 +7,7 @@
 
 import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
-import { randomDelay, exponentialBackoff } from './utils/antiDetection';
+import { randomDelay } from './utils/antiDetection';
 
 const FULLSCRIPT_BASE_URL = 'https://fullscript.com';
 const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`;
@@ -194,9 +194,9 @@ export class FullscriptScraper {
 
     const products = await this.page.evaluate(() => {
       const productCards = document.querySelectorAll('[data-testid="product-card"], .product-card, .product-item, article');
-      const extracted: ScrapedProduct[] = [];
+      const extracted: any[] = [];
 
-      productCards.forEach((card) => {
+      productCards.forEach((card: Element) => {
         try {
           // Extract brand
           const brandEl = card.querySelector('[data-testid="brand"], .brand, .product-brand');
