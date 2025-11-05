@@ -176,6 +176,8 @@ export class FullscriptScraper {
     // Wait for login to complete by checking for URL change OR login form disappearance
     // This works for both traditional navigation and SPA-style authentication
     console.log('[Scraper] Waiting for login to complete...');
+    console.log(`[Scraper] Initial URL: ${initialUrl}`);
+
     try {
       await this.page.waitForFunction(
         (startUrl) => {
@@ -186,12 +188,41 @@ export class FullscriptScraper {
           const passwordInput = document.querySelector('input[type="password"]') as HTMLElement | null;
           const loginFormGone = !passwordInput || !passwordInput.offsetParent;
 
+          // Debug logging
+          if (!urlChanged && !loginFormGone) {
+            console.log('[Debug] Current URL:', window.location.href);
+            console.log('[Debug] Password input exists:', !!passwordInput);
+            console.log('[Debug] Password input visible:', passwordInput?.offsetParent !== null);
+          }
+
           return urlChanged || loginFormGone;
         },
         initialUrl,
-        { timeout: 30000 }
+        { timeout: 30000, polling: 1000 }
       );
     } catch (error) {
+      // Log final state for debugging
+      const currentUrl = this.page.url();
+      console.log(`[Scraper] Login timeout - Current URL: ${currentUrl}`);
+      console.log(`[Scraper] Login timeout - Initial URL: ${initialUrl}`);
+
+      const hasPasswordInput = await this.page.$('input[type="password"]');
+      console.log(`[Scraper] Login timeout - Password input still exists: ${!!hasPasswordInput}`);
+
+      // Take screenshot for debugging
+      try {
+        const screenshot = await this.page.screenshot();
+        const base64 = screenshot.toString('base64');
+        console.log(`[Scraper] Login timeout screenshot (first 100 chars): ${base64.substring(0, 100)}...`);
+      } catch (screenshotError) {
+        console.log('[Scraper] Could not capture screenshot');
+      }
+
+      // Get page HTML for analysis
+      const html = await this.page.content();
+      const htmlSnippet = html.substring(0, 500);
+      console.log(`[Scraper] Login timeout - Page HTML snippet: ${htmlSnippet}`);
+
       throw new Error('Login timeout - form submission did not complete within 30 seconds');
     }
 
