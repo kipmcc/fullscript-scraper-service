@@ -8,6 +8,24 @@
 import { chromium, Browser, Page, BrowserContext } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
 import { randomDelay } from './utils/antiDetection';
+import {
+  ProductV2,
+  FullscriptImportV2,
+  SourceType,
+} from './types/v2Schema';
+import {
+  detectDosageForm,
+  detectCategory,
+  calculateConfidence,
+  generateDisplayName,
+  generateCanonicalId,
+} from './utils/enumDetection';
+import {
+  parseIngredients,
+  createFallbackIngredient,
+  extractKeyIngredientsText,
+} from './utils/ingredientParser';
+import { safeValidateProduct } from './utils/v2Validator';
 
 const FULLSCRIPT_BASE_URL = 'https://fullscript.com';
 const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`;
@@ -31,28 +49,11 @@ export interface ScraperConfig {
 }
 
 /**
- * Scraped product data structure
- */
-export interface ScrapedProduct {
-  brand: string;
-  product_name: string;
-  description?: string;
-  ingredients?: string;
-  serving_size?: string;
-  servings_per_container?: number;
-  price?: number;
-  image_url?: string;
-  product_url?: string;
-  category?: string;
-  dosage_form?: string;
-}
-
-/**
  * Scraper result
  */
 export interface ScraperResult {
   success: boolean;
-  products: ScrapedProduct[];
+  products: ProductV2[];
   totalScraped: number;
   errors: string[];
   importId?: string;
@@ -178,9 +179,9 @@ export class FullscriptScraper {
   }
 
   /**
-   * Extract product data from current page
+   * Extract product data from current page and convert to v2 schema
    */
-  private async extractProductsFromPage(): Promise<ScrapedProduct[]> {
+  private async extractProductsFromPage(): Promise<ProductV2[]> {
     if (!this.page) throw new Error('Browser not initialized');
 
     console.log('[Scraper] Extracting products from page...');
@@ -192,7 +193,8 @@ export class FullscriptScraper {
       console.warn('[Scraper] Product cards not found, attempting alternative selectors...');
     });
 
-    const products = await this.page.evaluate(() => {
+    // Extract raw product data from page
+    const rawProducts = await this.page.evaluate(() => {
       const productCards = document.querySelectorAll('[data-testid="product-card"], .product-card, .product-item, article');
       const extracted: any[] = [];
 
@@ -218,10 +220,19 @@ export class FullscriptScraper {
           const linkEl = card.querySelector('a[href*="/products/"]');
           const product_url = linkEl?.getAttribute('href');
 
-          // Extract price
-          const priceEl = card.querySelector('[data-testid="price"], .price, .product-price');
-          const priceText = priceEl?.textContent?.trim();
-          const price = priceText ? parseFloat(priceText.replace(/[^0-9.]/g, '')) : undefined;
+          // Extract serving size / dose info
+          const servingEl = card.querySelector('[data-testid="serving"], .serving-size, .dosage');
+          const serving_size = servingEl?.textContent?.trim();
+
+          // Extract ingredient facts (if visible on card)
+          const ingredientsEl = card.querySelector('[data-testid="ingredients"], .ingredients, .supplement-facts');
+          const ingredients_text = ingredientsEl?.textContent?.trim();
+
+          // Extract certifications
+          const certBadges = card.querySelectorAll('[data-testid="certification"], .badge, .certification');
+          const certifications = Array.from(certBadges)
+            .map(badge => badge.textContent?.trim())
+            .filter(Boolean);
 
           extracted.push({
             brand,
@@ -229,7 +240,9 @@ export class FullscriptScraper {
             description,
             image_url: image_url || undefined,
             product_url: product_url || undefined,
-            price,
+            serving_size,
+            ingredients_text,
+            certifications: certifications.length > 0 ? certifications : undefined,
           });
         } catch (error) {
           console.error('Error extracting product:', error);
@@ -239,8 +252,80 @@ export class FullscriptScraper {
       return extracted;
     });
 
-    console.log(`[Scraper] Extracted ${products.length} products from page`);
-    return products;
+    // Convert raw products to v2 schema
+    const v2Products: ProductV2[] = [];
+    const currentTime = new Date().toISOString();
+
+    for (const raw of rawProducts) {
+      try {
+        // Detect enums
+        const dosage_form = detectDosageForm(raw.product_name, raw.description);
+        const category = detectCategory(raw.product_name, raw.ingredients_text);
+
+        // Parse ingredients
+        let ingredients = raw.ingredients_text
+          ? parseIngredients(raw.ingredients_text)
+          : [createFallbackIngredient(raw.product_name)];
+
+        // Generate derived fields
+        const display_name = generateDisplayName(raw.brand, raw.product_name);
+        const canonical_id = generateCanonicalId(raw.brand, raw.product_name);
+        const key_ingredients_text = extractKeyIngredientsText(ingredients);
+
+        // Build full product URL if partial
+        const full_url = raw.product_url?.startsWith('http')
+          ? raw.product_url
+          : raw.product_url
+          ? `${FULLSCRIPT_BASE_URL}${raw.product_url}`
+          : undefined;
+
+        // Create product object
+        const product: ProductV2 = {
+          // Required fields
+          brand: raw.brand,
+          product_name: raw.product_name,
+          display_name,
+          canonical_id,
+          dosage_form,
+          category,
+          ingredients,
+          confidence: 0, // Calculated below
+          source_metadata: {
+            source_type: SourceType.MARKETPLACE,
+            source_name: 'fullscript',
+            source_url: full_url,
+            retrieved_at: currentTime,
+          },
+
+          // Optional fields
+          dose_per_unit: raw.serving_size,
+          recommended_dose_label: raw.serving_size,
+          key_ingredients_text,
+          certifications: raw.certifications,
+          notes: raw.description,
+          front_label_image_url: raw.image_url,
+        };
+
+        // Calculate confidence score
+        product.confidence = calculateConfidence(product);
+
+        // Validate product
+        const validation = safeValidateProduct(product);
+        if (validation.success) {
+          v2Products.push(product);
+        } else {
+          console.error(`[Scraper] Product validation failed for ${product.product_name}:`, validation.error);
+          // Add anyway with lower confidence
+          product.confidence = Math.max(product.confidence - 0.2, 0);
+          v2Products.push(product);
+        }
+      } catch (error: any) {
+        console.error(`[Scraper] Error converting product to v2:`, error.message);
+      }
+    }
+
+    console.log(`[Scraper] Extracted ${v2Products.length} products from page (v2 schema)`);
+    return v2Products;
   }
 
   /**
@@ -286,7 +371,7 @@ export class FullscriptScraper {
    */
   async scrape(config: ScraperConfig): Promise<ScraperResult> {
     const errors: string[] = [];
-    const allProducts: ScrapedProduct[] = [];
+    const allProducts: ProductV2[] = [];
     let importId: string | undefined;
 
     try {
@@ -359,7 +444,21 @@ export class FullscriptScraper {
       // Trim to exact limit
       const finalProducts = allProducts.slice(0, config.limit);
 
-      // Update import record with results
+      // Wrap in v2 schema
+      const importResult: FullscriptImportV2 = {
+        schema_version: 'aviado.stack.current.v2',
+        version: '2.1.0',
+        import_metadata: {
+          import_date: new Date().toISOString(),
+          import_source: 'fullscript_scraper',
+          llm_model: null,
+          confidence_threshold: 0.8,
+          notes: `Scraped ${finalProducts.length} products from Fullscript (mode: ${config.mode}, filter: ${config.filter || 'none'})`,
+        },
+        products: finalProducts,
+      };
+
+      // Update import record with results (using `products` column, not `products_data`)
       await supabase
         .from('fullscript_imports')
         .update({
@@ -367,12 +466,12 @@ export class FullscriptScraper {
           total_products: finalProducts.length,
           successful_products: finalProducts.length,
           failed_products: 0,
-          products_data: finalProducts,
+          products: importResult, // v2 schema wrapper
           completed_at: new Date().toISOString(),
         })
         .eq('id', importId);
 
-      console.log(`[Scraper] Scraping complete: ${finalProducts.length} products`);
+      console.log(`[Scraper] Scraping complete: ${finalProducts.length} products (v2 schema)`);
 
       return {
         success: true,

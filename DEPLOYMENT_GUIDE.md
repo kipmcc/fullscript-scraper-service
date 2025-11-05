@@ -223,6 +223,207 @@ curl -X POST "$SUPABASE_URL/functions/v1/fullscript-scrape-product" \
 
 ---
 
+## Expected Output
+
+### Raw Scraper Response (from Railway Service)
+
+The scraper returns raw Fullscript product data:
+
+```json
+{
+  "success": true,
+  "import_id": "550e8400-e29b-41d4-a716-446655440000",
+  "total_products": 3,
+  "message": "Scraping completed successfully"
+}
+```
+
+### Stored Raw Products (Supabase Table)
+
+Products are stored with this structure before schema transformation:
+
+```json
+[
+  {
+    "brand": "Pure Encapsulations",
+    "product_name": "Vitamin D3 2000 IU",
+    "description": "Supports bone health and immune function",
+    "ingredients": "Vitamin D3 (Cholecalciferol) 2000 IU",
+    "serving_size": "1 capsule",
+    "servings_per_container": 120,
+    "price": 24.99,
+    "image_url": "https://cdn.fullscript.com/vitamin-d3-2000.jpg",
+    "product_url": "https://fullscript.com/products/vitamin-d3-2000",
+    "category": "Vitamins & Minerals",
+    "dosage_form": "Capsule"
+  },
+  {
+    "brand": "Pure Encapsulations",
+    "product_name": "Omega-3 Plus",
+    "description": "Advanced triglyceride-form omega-3",
+    "ingredients": "Fish Oil (Anchovy & Sardine) 1000mg, Vitamin D3 2000 IU",
+    "serving_size": "2 softgels",
+    "servings_per_container": 30,
+    "price": 42.99,
+    "image_url": "https://cdn.fullscript.com/omega3-plus.jpg",
+    "product_url": "https://fullscript.com/products/omega-3-plus",
+    "category": "Fish Oil & Omegas",
+    "dosage_form": "Softgel"
+  }
+]
+```
+
+### V2 Schema Transformed Output
+
+After processing through AI enhancement and Aviado stack builder, products are stored as:
+
+```json
+{
+  "schema_version": "aviado.stack.current.v2",
+  "version": "2.0.0",
+  "items": [
+    {
+      "source_row_index": 0,
+      "name": "Vitamin D3 2000 IU",
+      "brand": "Pure Encapsulations",
+      "form": "Capsule",
+      "ingredients_raw": "Vitamin D3 (Cholecalciferol) 2000 IU",
+      "dosage": {
+        "amount_per_serving": 2000,
+        "unit_per_serving": "IU",
+        "recommended_units": 1,
+        "recommended_frequency": "daily",
+        "total_daily_amount": 2000,
+        "total_daily_unit": "IU",
+        "raw": "1 capsule daily"
+      },
+      "schedule": {
+        "timeslots": ["AM_WITH_FOOD"],
+        "raw": "Morning with food"
+      },
+      "purpose": ["Metabolic Health", "Immune Support"],
+      "impacted_biomarkers": ["vitamin_d", "calcium_absorption"],
+      "status": "OK",
+      "issues": [],
+      "bundle_links": [
+        {
+          "type": "goal",
+          "goal": "Metabolic Health",
+          "subgoal": "Micronutrient Status",
+          "confidence": 98,
+          "match_method": "semantic",
+          "matched_keywords": ["vitamin d3", "bone health", "immune"]
+        }
+      ],
+      "label_image_url": "https://cdn.fullscript.com/vitamin-d3-2000.jpg"
+    },
+    {
+      "source_row_index": 1,
+      "name": "Omega-3 Plus",
+      "brand": "Pure Encapsulations",
+      "form": "Softgel",
+      "ingredients_raw": "Fish Oil (Anchovy & Sardine) 1000mg, Vitamin D3 2000 IU",
+      "dosage": {
+        "amount_per_serving": 1000,
+        "unit_per_serving": "mg",
+        "recommended_units": 2,
+        "recommended_frequency": "daily",
+        "total_daily_amount": 2000,
+        "total_daily_unit": "mg",
+        "raw": "2 softgels daily"
+      },
+      "schedule": {
+        "timeslots": ["AM_WITH_FOOD"],
+        "raw": "Morning with food"
+      },
+      "purpose": ["Cardiovascular", "Brain Health"],
+      "impacted_biomarkers": ["triglycerides", "ldl", "inflammation"],
+      "status": "OK",
+      "issues": [],
+      "bundle_links": [
+        {
+          "type": "goal",
+          "goal": "Cardiovascular",
+          "subgoal": "Lipid Profile",
+          "confidence": 96,
+          "match_method": "semantic",
+          "matched_keywords": ["omega-3", "fish oil", "triglycerides"]
+        },
+        {
+          "type": "goal",
+          "goal": "Brain/Mood",
+          "subgoal": "Cognitive Function",
+          "confidence": 85,
+          "match_method": "semantic",
+          "matched_keywords": ["omega-3", "brain health", "cognitive"]
+        }
+      ],
+      "label_image_url": "https://cdn.fullscript.com/omega3-plus.jpg"
+    }
+  ],
+  "metadata": {
+    "created_at": "2025-11-04T12:30:00Z",
+    "last_modified": "2025-11-04T12:30:00Z",
+    "created_by": "fullscript-scraper",
+    "source": "fullscript_catalog",
+    "ai_enhancements": {
+      "version": "1.0.0",
+      "model": "gpt-4o-mini",
+      "confidence": 0.94,
+      "last_enhanced": "2025-11-04T12:30:00Z"
+    }
+  },
+  "media": {
+    "supplement_images": [
+      {
+        "item_id": "vitamin-d3-2000-iu",
+        "image_url": "https://cdn.fullscript.com/vitamin-d3-2000.jpg",
+        "image_type": "label",
+        "uploaded_at": "2025-11-04T12:30:00Z"
+      },
+      {
+        "item_id": "omega-3-plus",
+        "image_url": "https://cdn.fullscript.com/omega3-plus.jpg",
+        "image_type": "label",
+        "uploaded_at": "2025-11-04T12:30:00Z"
+      }
+    ]
+  },
+  "issues_summary": {
+    "rows": 2,
+    "ok": 2,
+    "warn": 0,
+    "error": 0
+  }
+}
+```
+
+### Validation Notes
+
+The v2 schema enforces the following requirements:
+
+**Required Enums:**
+- `dosage_form`: Must be one of (Tablet, Capsule, Softgel, Powder, Liquid, Cream, Oil, Spray, Patch, Tea)
+- `status`: Must be one of (OK, WARN, ERROR, PROCESSING)
+- `timeslots`: Array of valid timeslot values (AM_WITH_FOOD, PM_BEFORE_FOOD, BEDTIME, etc.)
+- `bundle_links.type`: Either "goal" or "biomarker"
+- `bundle_links.match_method`: One of (exact, synonym, semantic, fuzzy, ai, partial, loinc)
+
+**Validation Rules:**
+1. At least one item required in the `items` array
+2. Dosage amounts must be non-negative numbers
+3. Confidence scores (0-100) must be within range
+4. Metadata timestamps must be valid ISO 8601 format
+5. Image URLs must be valid HTTP(S) URLs
+6. Source row index must be non-negative integer
+
+**Conditional Rules:**
+- If `bundle_links.type` is "goal": `goal` field is required
+- If `bundle_links.type` is "biomarker": `lab_id` or `loinc_code` field is required
+- If `status` is "WARN" or "ERROR": `issues` array should not be empty
+
+---
+
 ## Monitoring & Troubleshooting
 
 ### View Railway Logs
