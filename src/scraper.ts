@@ -186,6 +186,34 @@ export class FullscriptScraper {
 
     console.log('[Scraper] Extracting products from page...');
 
+    // DEBUG: Log page URL and title
+    const url = this.page.url();
+    const title = await this.page.title();
+    console.log(`[DEBUG] Current URL: ${url}`);
+    console.log(`[DEBUG] Page title: ${title}`);
+
+    // DEBUG: Log page HTML structure
+    const debugInfo = await this.page.evaluate(() => {
+      const allDivs = document.querySelectorAll('div, article, section');
+      const productLike = Array.from(allDivs).filter(el => {
+        const className = el.className.toString().toLowerCase();
+        const id = el.id.toLowerCase();
+        return className.includes('product') || className.includes('card') ||
+               className.includes('item') || id.includes('product');
+      }).slice(0, 5);
+
+      return {
+        totalElements: allDivs.length,
+        productLikeElements: productLike.map(el => ({
+          tag: el.tagName,
+          class: el.className,
+          id: el.id,
+          textSample: el.textContent?.substring(0, 100)
+        }))
+      };
+    });
+    console.log('[DEBUG] Page structure:', JSON.stringify(debugInfo, null, 2));
+
     // Wait for product cards to load
     await this.page.waitForSelector('[data-testid="product-card"], .product-card, .product-item', {
       timeout: 10000,
