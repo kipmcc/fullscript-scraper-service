@@ -498,11 +498,11 @@ export class FullscriptScraper {
 
           console.log(`[Scraper] [${i + 1}/${limitedRawProducts.length}] Scraping product page: ${raw.product_name}`);
 
-          // Scrape product page with timeout
+          // Scrape product page with timeout (30 seconds - product pages are slow)
           const productPageData = await Promise.race([
             productPageScraper.scrapeProductPage(fullUrl),
             new Promise<null>((_, reject) =>
-              setTimeout(() => reject(new Error('Product page scraping timeout')), 15000)
+              setTimeout(() => reject(new Error('Product page scraping timeout')), 30000)
             ),
           ]);
 
