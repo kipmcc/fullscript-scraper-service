@@ -151,13 +151,12 @@ export class FullscriptScraper {
     // Submit form - try pressing Enter on password field first (more reliable than clicking button)
     // This ensures we submit the password form, not any OAuth buttons
     console.log('[Scraper] Submitting login form...');
-    
+
+    const initialUrl = this.page.url();
+
     try {
       // Try form submission via Enter key (most reliable)
-      await Promise.all([
-        this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-        passwordInput.press('Enter'),
-      ]);
+      await passwordInput.press('Enter');
     } catch (error) {
       // Fallback: Find and click the password form's submit button (not OAuth buttons)
       // Look for submit button within the same form as the password input
@@ -165,16 +164,35 @@ export class FullscriptScraper {
       if (form) {
         const submitButton = await form.asElement()?.$('button[type="submit"], input[type="submit"]');
         if (submitButton) {
-          await Promise.all([
-            this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-            submitButton.click(),
-          ]);
+          await submitButton.click();
         } else {
           throw new Error('Submit button not found in password form');
         }
       } else {
         throw new Error('Password form not found');
       }
+    }
+
+    // Wait for login to complete by checking for URL change OR login form disappearance
+    // This works for both traditional navigation and SPA-style authentication
+    console.log('[Scraper] Waiting for login to complete...');
+    try {
+      await this.page.waitForFunction(
+        (startUrl) => {
+          // Check if URL changed (navigation occurred)
+          const urlChanged = window.location.href !== startUrl;
+
+          // Check if login form disappeared (SPA-style login)
+          const passwordInput = document.querySelector('input[type="password"]') as HTMLElement | null;
+          const loginFormGone = !passwordInput || !passwordInput.offsetParent;
+
+          return urlChanged || loginFormGone;
+        },
+        initialUrl,
+        { timeout: 30000 }
+      );
+    } catch (error) {
+      throw new Error('Login timeout - form submission did not complete within 30 seconds');
     }
 
     await randomDelay(2000, 3000);
