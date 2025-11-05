@@ -103,25 +103,41 @@ export class ProductPageScraper {
    */
   private async expandAllAccordions(): Promise<void> {
     try {
-      // Find all collapsed accordion buttons
-      // Fullscript uses buttons with aria-expanded="false"
-      const collapsedAccordions = await this.page
-        .locator('button[aria-expanded="false"]')
-        .all();
+      // Target only product information accordions by their h5 header text
+      const accordionSections = [
+        'Description',
+        'Warnings',
+        'Dietary restrictions',
+        'Certifications',
+        'More',
+      ];
 
-      console.log(`[ProductPageScraper] Found ${collapsedAccordions.length} collapsed accordions`);
+      console.log(`[ProductPageScraper] Attempting to expand ${accordionSections.length} product accordions`);
 
-      // Click each to expand
-      for (const accordion of collapsedAccordions) {
+      for (const sectionName of accordionSections) {
         try {
-          await accordion.click({ timeout: 2000 });
-          await this.page.waitForTimeout(300); // Wait for expansion animation
-        } catch (error) {
-          console.warn('[ProductPageScraper] Failed to expand accordion:', error);
+          // Find the h5 header with this text
+          const header = this.page.locator(`h5:has-text("${sectionName}")`);
+
+          // Navigate to parent button (h5 is inside the button)
+          const button = header.locator('..');
+
+          // Check if collapsed
+          const ariaExpanded = await button.getAttribute('aria-expanded').catch(() => null);
+
+          if (ariaExpanded === 'false') {
+            console.log(`[ProductPageScraper] Expanding "${sectionName}" accordion`);
+            await button.click({ timeout: 2000 });
+            await this.page.waitForTimeout(300); // Wait for expansion animation
+          } else {
+            console.log(`[ProductPageScraper] "${sectionName}" accordion already expanded`);
+          }
+        } catch (error: any) {
+          console.warn(`[ProductPageScraper] Failed to expand "${sectionName}" accordion:`, error.message);
         }
       }
-    } catch (error) {
-      console.warn('[ProductPageScraper] Error expanding accordions:', error);
+    } catch (error: any) {
+      console.warn('[ProductPageScraper] Error expanding accordions:', error.message);
     }
   }
 
