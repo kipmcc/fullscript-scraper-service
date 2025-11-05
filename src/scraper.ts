@@ -129,27 +129,130 @@ export class FullscriptScraper {
 
     console.log('[Scraper] Filling login form...');
 
-    // Fill email
-    await this.page.fill('input[name="email"], input[type="email"]', email);
+    // Wait for login form to be visible
+    await this.page.waitForSelector('input[type="email"], input[name="email"], input[type="password"], input[name="password"]', { timeout: 10000 });
+
+    // Fill email - find the email input in the password login form (not OAuth)
+    const emailInput = await this.page.$('input[type="email"], input[name="email"]');
+    if (!emailInput) {
+      throw new Error('Email input field not found');
+    }
+    await emailInput.fill(email);
     await randomDelay(500, 1000);
 
     // Fill password
-    await this.page.fill('input[name="password"], input[type="password"]', password);
+    const passwordInput = await this.page.$('input[type="password"], input[name="password"]');
+    if (!passwordInput) {
+      throw new Error('Password input field not found');
+    }
+    await passwordInput.fill(password);
     await randomDelay(500, 1000);
 
-    // Submit form
+    // Submit form - try pressing Enter on password field first (more reliable than clicking button)
+    // This ensures we submit the password form, not any OAuth buttons
     console.log('[Scraper] Submitting login form...');
-    await Promise.all([
-      this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-      this.page.click('button[type="submit"], input[type="submit"]'),
-    ]);
+    
+    try {
+      // Try form submission via Enter key (most reliable)
+      await Promise.all([
+        this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+        passwordInput.press('Enter'),
+      ]);
+    } catch (error) {
+      // Fallback: Find and click the password form's submit button (not OAuth buttons)
+      // Look for submit button within the same form as the password input
+      const form = await passwordInput.evaluateHandle((el) => el.closest('form'));
+      if (form) {
+        const submitButton = await form.asElement()?.$('button[type="submit"], input[type="submit"]');
+        if (submitButton) {
+          await Promise.all([
+            this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
+            submitButton.click(),
+          ]);
+        } else {
+          throw new Error('Submit button not found in password form');
+        }
+      } else {
+        throw new Error('Password form not found');
+      }
+    }
 
     await randomDelay(2000, 3000);
 
+    // Handle redirects - Fullscript may redirect through Google even for username/password login
+    // Wait for final redirect to Fullscript domain (not intermediate Google redirects)
+    let currentUrl = this.page.url();
+    let redirectCount = 0;
+    const maxRedirects = 10;
+    const maxWaitTime = 30000; // 30 seconds max
+    const startTime = Date.now();
+
+    console.log(`[Scraper] Initial redirect URL: ${currentUrl}`);
+
+    // Wait for redirect to Fullscript domain, handling OAuth flow
+    while (!currentUrl.includes('fullscript.com') && redirectCount < maxRedirects && (Date.now() - startTime) < maxWaitTime) {
+      console.log(`[Scraper] Waiting for Fullscript redirect (attempt ${redirectCount + 1}/${maxRedirects}, current: ${currentUrl})...`);
+      
+      // If we're on Google (redirect through Google auth), wait for redirect back to Fullscript
+      if (currentUrl.includes('accounts.google.com') || currentUrl.includes('google.com')) {
+        console.log('[Scraper] Detected redirect through Google, waiting for redirect back to Fullscript...');
+        
+        // Wait for URL to change to Fullscript domain
+        try {
+          await this.page.waitForFunction(
+            () => {
+              const url = window.location.href;
+              return url.includes('fullscript.com');
+            },
+            { timeout: 20000 }
+          );
+          currentUrl = this.page.url();
+          break;
+        } catch (error) {
+          // Wait a bit more and check again
+          await randomDelay(2000, 3000);
+          currentUrl = this.page.url();
+          
+          if (currentUrl.includes('fullscript.com')) {
+            break;
+          }
+        }
+      } else {
+        // Wait for any navigation
+        try {
+          await this.page.waitForNavigation({ 
+            waitUntil: 'domcontentloaded', 
+            timeout: 5000 
+          });
+          currentUrl = this.page.url();
+          
+          if (currentUrl.includes('fullscript.com')) {
+            break;
+          }
+        } catch (error) {
+          // Navigation timeout - check current URL
+          currentUrl = this.page.url();
+          
+          if (currentUrl.includes('fullscript.com')) {
+            break;
+          }
+          
+          // Wait a bit before next attempt
+          await randomDelay(1000, 2000);
+        }
+      }
+
+      redirectCount++;
+    }
+
     // Check if login was successful and detect base URL from redirect
-    const currentUrl = this.page.url();
     if (currentUrl.includes('/login')) {
       throw new Error('Login failed - still on login page');
+    }
+
+    // Verify we're on a Fullscript domain
+    if (!currentUrl.includes('fullscript.com')) {
+      throw new Error(`Login failed - redirected to non-Fullscript domain: ${currentUrl}`);
     }
 
     // Extract base URL from post-login redirect (e.g., https://us.fullscript.com/...)
@@ -157,6 +260,10 @@ export class FullscriptScraper {
     if (urlMatch) {
       this.baseUrl = urlMatch[1];
       console.log(`[Scraper] Detected base URL from login redirect: ${this.baseUrl}`);
+    } else {
+      // Fallback: use default Fullscript domain
+      this.baseUrl = 'https://fullscript.com';
+      console.log(`[Scraper] Using default base URL: ${this.baseUrl}`);
     }
 
     console.log('[Scraper] Login successful');
@@ -234,44 +341,84 @@ export class FullscriptScraper {
     });
     console.log('[DEBUG] Page structure:', JSON.stringify(debugInfo, null, 2));
 
-    // Wait for product cards to load (Fullscript uses flex layout with border)
-    await this.page.waitForSelector('div.flex.flex-col.rounded-lg.border', {
-      timeout: 10000,
-    }).catch(() => {
-      console.warn('[Scraper] Product cards not found with primary selector...');
-    });
+    // Wait for product cards to load - try multiple selector strategies
+    // Based on actual Fullscript HTML structure: https://us.fullscript.com/u/catalog
+    const cardSelectors = [
+      'span[data-e2e="patient-product-card"]', // Primary: Fullscript product card marker
+      'div[data-testid="aviary-columns"] > div', // Fallback 1: Direct children of product grid
+      'a[data-testid="router-link"][data-e2e="go-to-pdp"]', // Fallback 2: Product links
+      'div[class*="448ara"]', // Fallback 3: CSS class pattern (may change)
+      'div[class*="product"]', // Fallback 4: Generic product divs
+      'article', // Fallback 5: Semantic article elements
+    ];
+
+    let cardsFound = false;
+    for (const selector of cardSelectors) {
+      try {
+        await this.page.waitForSelector(selector, { timeout: 5000 });
+        console.log(`[Scraper] Product cards found with selector: ${selector}`);
+        cardsFound = true;
+        break;
+      } catch (error) {
+        // Try next selector
+        continue;
+      }
+    }
+
+    if (!cardsFound) {
+      console.warn('[Scraper] Product cards not found with any selector, attempting extraction anyway...');
+    }
 
     // Extract raw product data from page
-    const rawProducts = await this.page.evaluate(() => {
-      // Fullscript product cards: <div class="flex flex-col rounded-lg border border-border p-4">
-      const productCards = document.querySelectorAll('div.flex.flex-col.rounded-lg.border');
+    const rawProducts = await this.page.evaluate((cardSelectors) => {
+      // Try multiple selector strategies
+      let productCards: NodeListOf<Element> | null = null;
+      
+      for (const selector of cardSelectors) {
+        const cards = document.querySelectorAll(selector);
+        if (cards.length > 0) {
+          // Filter to only actual product cards (must have product link or image)
+          const filtered = Array.from(cards).filter(card => {
+            const hasLink = card.querySelector('a[href*="/catalog/product"], a[href*="/u/catalog/product"], a[data-testid="router-link"]');
+            const hasImage = card.querySelector('img[src*="fullscript"], img[src*="assets"]');
+            const hasProductName = card.querySelector('p[title], h3, [data-testid="name-wrapper"], p[class*="1m1es5o"]');
+            return hasLink || (hasImage && hasProductName);
+          });
+          
+          if (filtered.length > 0) {
+            productCards = filtered as unknown as NodeListOf<Element>;
+            console.log(`[Scraper] Using selector: ${selector} (found ${filtered.length} product cards)`);
+            break;
+          }
+        }
+      }
+
+      if (!productCards || productCards.length === 0) {
+        console.warn('[Scraper] No product cards found with any selector');
+        return [];
+      }
       const extracted: any[] = [];
 
       productCards.forEach((card: Element) => {
         try {
-          // Extract product name from h3 > a
-          // Structure: <h3 class="mb-0 truncate ..."><a href="...">ProOmega® 2000</a></h3>
-          const nameEl = card.querySelector('h3 a');
-          const product_name = nameEl?.textContent?.trim() || 'Unknown Product';
+          // Extract product name - actual structure: <p title="..." class="css-1m1es5o">Vitamin D3 & K2</p>
+          const nameEl = card.querySelector('p[class*="1m1es5o"], p[title], [data-testid="name-wrapper"] p, h3 a, h3');
+          const product_name = nameEl?.textContent?.trim() || nameEl?.getAttribute('title')?.trim() || 'Unknown Product';
 
-          // Extract brand from p.truncate (sibling of h3)
-          // Structure: <p class="truncate">Nordic Naturals</p>
-          const brandEl = card.querySelector('div.mb-4.overflow-x-hidden p.truncate');
-          const brand = brandEl?.textContent?.trim() || 'Unknown Brand';
+          // Extract brand - actual structure: <p title="..." class="css-1lfap54">Pure Encapsulations</p>
+          const brandEl = card.querySelector('p[class*="1lfap54"], p[title]:not([class*="1m1es5o"]), [data-testid="name-wrapper"] + p');
+          const brand = brandEl?.textContent?.trim() || brandEl?.getAttribute('title')?.trim() || 'Unknown Brand';
 
-          // Extract product URL from first a tag or h3 > a
-          // Structure: <a href="/catalog/products/proomega-2000?variant=...">
-          const linkEl = card.querySelector('a[href*="/catalog/products/"], a[href*="/products/"]');
+          // Extract product URL - actual structure: <a data-testid="router-link" href="/u/catalog/product/...">
+          const linkEl = card.querySelector('a[data-testid="router-link"], a[data-e2e="go-to-pdp"], a[href*="/catalog/product"], a[href*="/u/catalog/product"]');
           const product_url = linkEl?.getAttribute('href');
 
-          // Extract image URL
-          // Structure: <img alt="ProOmega® 2000" src="https://assets.fullscript.io/...">
-          const imgEl = card.querySelector('img');
+          // Extract image URL - actual structure: <img class="css-ndbksg" src="https://assets.fullscript.io/...">
+          const imgEl = card.querySelector('img[src*="fullscript"], img[src*="assets"], img[class*="ndbksg"], img');
           const image_url = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src');
 
-          // Extract serving size from combobox button
-          // Structure: <button role="combobox"><div><span>60 Softgels</span></div></button>
-          const servingEl = card.querySelector('button[role="combobox"] span');
+          // Extract serving size - actual structure: <p class="css-jl0sy5">120 capsules</p> inside button or span
+          const servingEl = card.querySelector('button[role="combobox"] span, button[role="combobox"] p, [id^="radix"] p, p[class*="jl0sy5"]');
           const serving_size = servingEl?.textContent?.trim();
 
           // Note: Description and ingredients are NOT on the card - would need to visit product page
@@ -297,7 +444,7 @@ export class FullscriptScraper {
       });
 
       return extracted;
-    });
+    }, cardSelectors);
 
     console.log(`[Scraper] Extracted ${rawProducts.length} raw products from catalog cards`);
     return rawProducts;
