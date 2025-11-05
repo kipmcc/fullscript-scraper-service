@@ -386,12 +386,9 @@ export class FullscriptScraper {
         .from('fullscript_imports')
         .insert({
           status: 'running',
-          mode: config.mode === 'full_catalog' ? 'full' :
-                config.mode === 'search' ? 'single' : 'incremental',
-          metadata: {
-            filter: config.filter,
-            limit: config.limit,
-          },
+          scrape_mode: config.mode, // Use actual column name
+          filter_value: config.filter || null, // Use actual column name
+          import_source: 'fullscript_scraper',
         })
         .select()
         .single();
@@ -493,7 +490,7 @@ export class FullscriptScraper {
           .from('fullscript_imports')
           .update({
             status: 'failed',
-            error_message: errorMessage,
+            errors: [{ message: errorMessage, timestamp: new Date().toISOString() }],
             completed_at: new Date().toISOString(),
           })
           .eq('id', importId);
