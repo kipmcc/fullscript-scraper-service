@@ -60,10 +60,7 @@ export class ProductPageScraper {
           console.warn('[ProductPageScraper] Product name selector not found');
         });
 
-      // Small delay for dynamic content
-      await this.page.waitForTimeout(1000);
-
-      // Expand all accordion sections
+      // Expand all accordion sections (this now waits for accordions to exist)
       await this.expandAllAccordions();
 
       // Extract data from each section
@@ -103,6 +100,12 @@ export class ProductPageScraper {
    */
   private async expandAllAccordions(): Promise<void> {
     try {
+      // Wait for at least one accordion to be present (React hydration)
+      await this.page.waitForSelector('h5:has-text("Description"), h5:has-text("More")', { timeout: 5000 })
+        .catch(() => {
+          console.warn('[ProductPageScraper] No accordions found on page');
+        });
+
       // Target only product information accordions by their h5 header text
       const accordionSections = [
         'Description',
@@ -122,8 +125,8 @@ export class ProductPageScraper {
           // Navigate to parent button (h5 is inside the button)
           const button = header.locator('..');
 
-          // Check if collapsed
-          const ariaExpanded = await button.getAttribute('aria-expanded').catch(() => null);
+          // Wait for button to be present and get expanded state
+          const ariaExpanded = await button.getAttribute('aria-expanded', { timeout: 2000 }).catch(() => null);
 
           if (ariaExpanded === 'false') {
             console.log(`[ProductPageScraper] Expanding "${sectionName}" accordion`);
