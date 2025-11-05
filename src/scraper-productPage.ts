@@ -11,7 +11,6 @@ import {
   parseMoreSection,
   parseDietaryTags,
   parseCertifications,
-  parseWarnings,
   cleanHtmlText,
 } from './utils/productPageParser';
 
@@ -153,7 +152,7 @@ export class ProductPageScraper {
       const descriptionSection = this.page.locator('h5:has-text("Description")').locator('..').locator('..').locator('...');
       const descriptionContent = descriptionSection.locator('.css-1l74dbd-HTML-styles-GenericCollapsible-styles, p, div.text-content');
 
-      const html = await descriptionContent.innerHTML().catch(() => '');
+      const html = await descriptionContent.innerHTML({ timeout: 3000 }).catch(() => '');
 
       return cleanHtmlText(html);
     } catch (error) {
@@ -171,15 +170,14 @@ export class ProductPageScraper {
       const warningsSection = this.page.locator('h5:has-text("Warnings"), h5:has-text("Caution")').locator('..').locator('..').locator('...');
       const warningsContent = warningsSection.locator('.css-1l74dbd-HTML-styles-GenericCollapsible-styles, p, div.text-content');
 
-      const html = await warningsContent.innerHTML().catch(() => '');
+      const html = await warningsContent.innerHTML({ timeout: 3000 }).catch(() => '');
 
       if (html) {
         return cleanHtmlText(html);
       }
 
-      // Alternative: Parse from raw HTML
-      const pageHtml = await this.page.content();
-      return parseWarnings(pageHtml);
+      // Alternative: Parse from raw HTML (skip this - too slow)
+      return null;
     } catch (error) {
       console.warn('[ProductPageScraper] Warnings not found:', error);
       return null;
@@ -262,7 +260,7 @@ export class ProductPageScraper {
         'h5:has-text("More"), h5:has-text("Supplement Facts"), h5:has-text("Ingredients")'
       ).locator('..').locator('..').locator('...');
 
-      const html = await moreSection.innerHTML().catch(() => '');
+      const html = await moreSection.innerHTML({ timeout: 3000 }).catch(() => '');
 
       if (html) {
         return parseMoreSection(html);
@@ -271,7 +269,7 @@ export class ProductPageScraper {
       // Alternative: Try to find supplement facts table directly
       const factsTable = await this.page
         .locator('table.supplement-facts, [class*="supplement-facts"]')
-        .innerHTML()
+        .innerHTML({ timeout: 3000 })
         .catch(() => '');
 
       if (factsTable) {
