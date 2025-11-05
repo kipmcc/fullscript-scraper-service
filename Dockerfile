@@ -9,7 +9,9 @@ WORKDIR /app
 
 # Install dependencies first (better caching)
 COPY package*.json ./
-RUN npm ci --only=production
+
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci
 
 # Copy TypeScript config and source code
 COPY tsconfig.json ./
@@ -18,10 +20,13 @@ COPY src ./src
 # Build TypeScript
 RUN npm run build
 
+# Remove devDependencies after build
+RUN npm prune --production
+
 # Install Playwright browsers
 RUN npx playwright install chromium
 
-# Remove dev dependencies and source files (save space)
+# Remove source files (save space)
 RUN rm -rf src tsconfig.json
 
 # Expose port (Railway will override this)
