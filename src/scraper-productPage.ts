@@ -50,8 +50,8 @@ export class ProductPageScraper {
    */
   async scrapeProductPage(productUrl: string): Promise<ProductPageData> {
     try {
-      // Navigate to product page
-      await this.page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      // Navigate to product page (20s timeout - Fullscript pages load slowly)
+      await this.page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
       // Wait for React to render (Fullscript uses data-e2e attributes)
       await this.page
