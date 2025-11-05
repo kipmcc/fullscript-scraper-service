@@ -29,7 +29,7 @@ import { safeValidateProduct } from './utils/v2Validator';
 import { ProductPageScraper } from './scraper-productPage';
 
 const FULLSCRIPT_BASE_URL = 'https://us.fullscript.com';
-const FULLSCRIPT_LOGIN_URL = 'https://fullscript.com/login'; // Login uses main domain
+const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`; // Login on same domain for cookies
 const FULLSCRIPT_CATALOG_URL = `${FULLSCRIPT_BASE_URL}/u/catalog`; // User-specific catalog
 
 // Supabase client
@@ -176,6 +176,15 @@ export class FullscriptScraper {
 
     await this.page.goto(catalogUrl, { waitUntil: 'domcontentloaded' });
     await randomDelay(2000, 3000);
+
+    // Verify we're on catalog page, not redirected back to login
+    const currentUrl = this.page.url();
+    const currentTitle = await this.page.title();
+    console.log(`[Scraper] After catalog navigation - URL: ${currentUrl}, Title: ${currentTitle}`);
+
+    if (currentUrl.includes('/login')) {
+      throw new Error('Catalog navigation failed - redirected back to login (authentication issue)');
+    }
 
     console.log('[Scraper] Catalog loaded');
   }
