@@ -128,6 +128,7 @@ export class FullscriptScraper {
     await randomDelay(1000, 2000);
 
     console.log('[Scraper] Filling login form...');
+    console.log(`[Scraper] Using email: ${email.substring(0, 3)}***@${email.split('@')[1]}`);
 
     // Wait for login form to be visible
     await this.page.waitForSelector('input[type="email"], input[name="email"], input[type="password"], input[name="password"]', { timeout: 10000 });
@@ -140,6 +141,10 @@ export class FullscriptScraper {
     await emailInput.fill(email);
     await randomDelay(500, 1000);
 
+    // Verify email was filled
+    const emailValue = await emailInput.inputValue();
+    console.log(`[Scraper] Email field value: ${emailValue.substring(0, 3)}***@${emailValue.split('@')[1]}`);
+
     // Fill password
     const passwordInput = await this.page.$('input[type="password"], input[name="password"]');
     if (!passwordInput) {
@@ -147,6 +152,10 @@ export class FullscriptScraper {
     }
     await passwordInput.fill(password);
     await randomDelay(500, 1000);
+
+    // Verify password was filled (just check length for security)
+    const passwordValue = await passwordInput.inputValue();
+    console.log(`[Scraper] Password field filled: ${passwordValue.length} characters`);
 
     // Submit form by clicking the submit button
     // Find the password form's submit button (not OAuth buttons)
@@ -166,13 +175,55 @@ export class FullscriptScraper {
       const anyButton = await form.asElement()?.$('button');
       if (anyButton) {
         console.log('[Scraper] Found button without type="submit", using it');
+
+        // Check if button is disabled
+        const isDisabled = await anyButton.evaluate((btn) => (btn as HTMLButtonElement).disabled);
+        console.log(`[Scraper] Button disabled: ${isDisabled}`);
+
         await anyButton.click();
       } else {
         throw new Error('Submit button not found in password form');
       }
     } else {
       console.log('[Scraper] Found submit button, clicking...');
+
+      // Check if button is disabled
+      const isDisabled = await submitButton.evaluate((btn) => (btn as HTMLButtonElement).disabled);
+      console.log(`[Scraper] Button disabled: ${isDisabled}`);
+
       await submitButton.click();
+    }
+
+    // Wait a moment for any client-side validation or errors to appear
+    await randomDelay(1000, 2000);
+
+    // Check for error messages on the page
+    const errorMessages = await this.page.evaluate(() => {
+      const errorSelectors = [
+        '.error',
+        '.alert',
+        '.notification',
+        '[role="alert"]',
+        '[class*="error"]',
+        '[class*="alert"]',
+        '[class*="invalid"]',
+      ];
+
+      const errors: string[] = [];
+      for (const selector of errorSelectors) {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach((el) => {
+          const text = el.textContent?.trim();
+          if (text && text.length > 0 && text.length < 200) {
+            errors.push(text);
+          }
+        });
+      }
+      return errors;
+    });
+
+    if (errorMessages.length > 0) {
+      console.log(`[Scraper] Found error messages on page: ${JSON.stringify(errorMessages)}`);
     }
 
     // Wait for login to complete by checking for URL change OR login form disappearance
@@ -222,8 +273,8 @@ export class FullscriptScraper {
 
       // Get page HTML for analysis
       const html = await this.page.content();
-      const htmlSnippet = html.substring(0, 500);
-      console.log(`[Scraper] Login timeout - Page HTML snippet: ${htmlSnippet}`);
+      const htmlSnippet = html.substring(0, 2000);
+      console.log(`[Scraper] Login timeout - Page HTML snippet (2000 chars): ${htmlSnippet}`);
 
       throw new Error('Login timeout - form submission did not complete within 30 seconds');
     }
