@@ -58,7 +58,7 @@ export class RateLimiter {
 
   constructor(
     private requestsPerSecond = 2,
-    private _burstSize = 5,
+    _burstSize = 5, // Reserved for future burst limiting implementation
     private windowMs = 60000 // 1 minute
   ) {}
 
