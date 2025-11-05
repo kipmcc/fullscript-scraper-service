@@ -148,29 +148,31 @@ export class FullscriptScraper {
     await passwordInput.fill(password);
     await randomDelay(500, 1000);
 
-    // Submit form - try pressing Enter on password field first (more reliable than clicking button)
-    // This ensures we submit the password form, not any OAuth buttons
+    // Submit form by clicking the submit button
+    // Find the password form's submit button (not OAuth buttons)
     console.log('[Scraper] Submitting login form...');
 
     const initialUrl = this.page.url();
 
-    try {
-      // Try form submission via Enter key (most reliable)
-      await passwordInput.press('Enter');
-    } catch (error) {
-      // Fallback: Find and click the password form's submit button (not OAuth buttons)
-      // Look for submit button within the same form as the password input
-      const form = await passwordInput.evaluateHandle((el) => el.closest('form'));
-      if (form) {
-        const submitButton = await form.asElement()?.$('button[type="submit"], input[type="submit"]');
-        if (submitButton) {
-          await submitButton.click();
-        } else {
-          throw new Error('Submit button not found in password form');
-        }
+    // Find submit button within the same form as the password input
+    const form = await passwordInput.evaluateHandle((el) => el.closest('form'));
+    if (!form) {
+      throw new Error('Password form not found');
+    }
+
+    const submitButton = await form.asElement()?.$('button[type="submit"], input[type="submit"]');
+    if (!submitButton) {
+      // Try finding any button in the form (some forms don't specify type="submit")
+      const anyButton = await form.asElement()?.$('button');
+      if (anyButton) {
+        console.log('[Scraper] Found button without type="submit", using it');
+        await anyButton.click();
       } else {
-        throw new Error('Password form not found');
+        throw new Error('Submit button not found in password form');
       }
+    } else {
+      console.log('[Scraper] Found submit button, clicking...');
+      await submitButton.click();
     }
 
     // Wait for login to complete by checking for URL change OR login form disappearance
