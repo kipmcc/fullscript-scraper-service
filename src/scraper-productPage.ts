@@ -148,15 +148,33 @@ export class ProductPageScraper {
    */
   private async extractDescription(): Promise<string> {
     try {
-      // Look for Description section
-      const descriptionSection = this.page.locator('h5:has-text("Description")').locator('..').locator('..').locator('...');
-      const descriptionContent = descriptionSection.locator('.css-1l74dbd-HTML-styles-GenericCollapsible-styles, p, div.text-content');
+      const html = await this.page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('h5'));
+        const header = headers.find(h => h.textContent?.includes('Description'));
+        if (!header) return null;
 
-      const html = await descriptionContent.innerHTML({ timeout: 3000 }).catch(() => '');
+        // Get parent button and its container
+        const button = header.closest('button');
+        if (!button) return null;
+
+        const container = button.parentElement;
+        if (!container) return null;
+
+        // Find content div (typically next sibling or within container)
+        const content = container.querySelector('div:not(:has(button))')
+          || Array.from(container.children).find(el => el.tagName === 'DIV' && !el.querySelector('button'));
+
+        return content?.innerHTML || null;
+      });
+
+      if (!html) {
+        console.warn('[ProductPageScraper] Description content not found in DOM');
+        return '';
+      }
 
       return cleanHtmlText(html);
-    } catch (error) {
-      console.warn('[ProductPageScraper] Description not found:', error);
+    } catch (error: any) {
+      console.error('[ProductPageScraper] Description extraction error:', error.message);
       return '';
     }
   }
@@ -255,35 +273,42 @@ export class ProductPageScraper {
     otherIngredients: string | null;
   }> {
     try {
-      // Look for "More" section or "Supplement Facts"
-      const moreSection = this.page.locator(
-        'h5:has-text("More"), h5:has-text("Supplement Facts"), h5:has-text("Ingredients")'
-      ).locator('..').locator('..').locator('...');
+      const html = await this.page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('h5'));
+        const header = headers.find(h =>
+          h.textContent?.includes('More') ||
+          h.textContent?.includes('Supplement Facts') ||
+          h.textContent?.includes('Ingredients')
+        );
 
-      const html = await moreSection.innerHTML({ timeout: 3000 }).catch(() => '');
+        if (!header) return null;
+
+        const button = header.closest('button');
+        if (!button) return null;
+
+        const container = button.parentElement;
+        if (!container) return null;
+
+        // Find content div
+        const content = container.querySelector('div:not(:has(button))')
+          || Array.from(container.children).find(el => el.tagName === 'DIV' && !el.querySelector('button'));
+
+        return content?.innerHTML || null;
+      });
 
       if (html) {
         return parseMoreSection(html);
       }
 
-      // Alternative: Try to find supplement facts table directly
-      const factsTable = await this.page
-        .locator('table.supplement-facts, [class*="supplement-facts"]')
-        .innerHTML({ timeout: 3000 })
-        .catch(() => '');
-
-      if (factsTable) {
-        return parseMoreSection(factsTable);
-      }
-
+      console.warn('[ProductPageScraper] More section content not found in DOM');
       return {
         suggestedUse: null,
         servingSize: null,
         ingredients: [],
         otherIngredients: null,
       };
-    } catch (error) {
-      console.warn('[ProductPageScraper] More section not found:', error);
+    } catch (error: any) {
+      console.error('[ProductPageScraper] More section extraction error:', error.message);
       return {
         suggestedUse: null,
         servingSize: null,

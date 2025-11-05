@@ -28,9 +28,9 @@ import {
 import { safeValidateProduct } from './utils/v2Validator';
 import { ProductPageScraper } from './scraper-productPage';
 
-const FULLSCRIPT_BASE_URL = 'https://fullscript.com';
-const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`;
-const FULLSCRIPT_CATALOG_URL = `${FULLSCRIPT_BASE_URL}/catalog`;
+const FULLSCRIPT_BASE_URL = 'https://us.fullscript.com';
+const FULLSCRIPT_LOGIN_URL = 'https://fullscript.com/login'; // Login uses main domain
+const FULLSCRIPT_CATALOG_URL = `${FULLSCRIPT_BASE_URL}/u/catalog`; // User-specific catalog
 
 // Supabase client
 const supabase = createClient(
@@ -170,7 +170,8 @@ export class FullscriptScraper {
     } else if (config.mode === 'brand' && config.filter) {
       catalogUrl += `?brand=${encodeURIComponent(config.filter)}`;
     } else if (config.mode === 'search' && config.filter) {
-      catalogUrl += `?q=${encodeURIComponent(config.filter)}`;
+      // Use ?query= with quotes for exact match (matches user's manual search)
+      catalogUrl += `?query="${encodeURIComponent(config.filter)}"`;
     }
 
     await this.page.goto(catalogUrl, { waitUntil: 'domcontentloaded' });
