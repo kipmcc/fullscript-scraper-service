@@ -28,9 +28,9 @@ import {
 import { safeValidateProduct } from './utils/v2Validator';
 import { ProductPageScraper } from './scraper-productPage';
 
-const FULLSCRIPT_BASE_URL = 'https://us.fullscript.com';
-const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`; // Login on same domain for cookies
-const FULLSCRIPT_CATALOG_URL = `${FULLSCRIPT_BASE_URL}/u/catalog`; // User-specific catalog
+const FULLSCRIPT_LOGIN_URL = 'https://fullscript.com/login';
+
+// Base URL and catalog URL will be determined after login based on redirect
 
 // Supabase client
 const supabase = createClient(
@@ -67,6 +67,7 @@ export class FullscriptScraper {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  private baseUrl: string = 'https://fullscript.com'; // Will be updated after login redirect
 
   /**
    * Initialize browser with anti-detection settings
@@ -145,10 +146,17 @@ export class FullscriptScraper {
 
     await randomDelay(2000, 3000);
 
-    // Check if login was successful
+    // Check if login was successful and detect base URL from redirect
     const currentUrl = this.page.url();
     if (currentUrl.includes('/login')) {
       throw new Error('Login failed - still on login page');
+    }
+
+    // Extract base URL from post-login redirect (e.g., https://us.fullscript.com/...)
+    const urlMatch = currentUrl.match(/^(https:\/\/[^\/]+)/);
+    if (urlMatch) {
+      this.baseUrl = urlMatch[1];
+      console.log(`[Scraper] Detected base URL from login redirect: ${this.baseUrl}`);
     }
 
     console.log('[Scraper] Login successful');
@@ -162,7 +170,8 @@ export class FullscriptScraper {
 
     console.log('[Scraper] Navigating to catalog...');
 
-    let catalogUrl = FULLSCRIPT_CATALOG_URL;
+    // Use detected base URL from login redirect + /u/catalog path
+    let catalogUrl = `${this.baseUrl}/u/catalog`;
 
     // Apply mode-specific filters
     if (config.mode === 'category' && config.filter) {
@@ -322,7 +331,7 @@ export class FullscriptScraper {
         const full_url = raw.product_url?.startsWith('http')
           ? raw.product_url
           : raw.product_url
-          ? `${FULLSCRIPT_BASE_URL}${raw.product_url}`
+          ? `${this.baseUrl}${raw.product_url}`
           : undefined;
 
         // Create product object
@@ -504,7 +513,7 @@ export class FullscriptScraper {
           // Build full URL if needed
           const fullUrl = raw.product_url.startsWith('http')
             ? raw.product_url
-            : `${FULLSCRIPT_BASE_URL}${raw.product_url}`;
+            : `${this.baseUrl}${raw.product_url}`;
 
           console.log(`[Scraper] [${i + 1}/${limitedRawProducts.length}] Scraping product page: ${raw.product_name}`);
 
