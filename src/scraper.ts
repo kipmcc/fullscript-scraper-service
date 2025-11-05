@@ -285,8 +285,8 @@ export class FullscriptScraper {
 
     for (const raw of rawProducts) {
       try {
-        // Detect enums
-        const dosage_form = detectDosageForm(raw.product_name, raw.description);
+        // Detect enums (pass serving_size for better dosage_form detection)
+        const dosage_form = detectDosageForm(raw.product_name, raw.description, raw.serving_size);
         const category = detectCategory(raw.product_name, raw.ingredients_text);
 
         // Parse ingredients

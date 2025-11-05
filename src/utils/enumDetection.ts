@@ -7,21 +7,24 @@
 import { DosageForm, Category } from '../types/v2Schema';
 
 /**
- * Detect dosage form from product name and description
+ * Detect dosage form from product name, description, and serving size
  *
  * @param productName - Product name
  * @param description - Product description (optional)
+ * @param servingSize - Package size text (e.g., "90 capsules", "60 Softgels") (optional)
  * @returns Detected DosageForm enum value
  *
  * @example
  * detectDosageForm("Vitamin D3 1000 IU Softgels") // DosageForm.SOFTGEL
  * detectDosageForm("Magnesium Citrate Powder") // DosageForm.POWDER
+ * detectDosageForm("Magnesium", undefined, "90 capsules") // DosageForm.CAPSULE
  */
 export function detectDosageForm(
   productName: string,
-  description?: string
+  description?: string,
+  servingSize?: string
 ): DosageForm {
-  const text = `${productName} ${description || ''}`.toLowerCase();
+  const text = `${productName} ${description || ''} ${servingSize || ''}`.toLowerCase();
 
   // Order matters - check more specific forms first
   if (text.match(/\bsoftgel|soft gel|soft-gel\b/i)) return DosageForm.SOFTGEL;
@@ -67,8 +70,8 @@ export function detectCategory(
     return Category.MINERAL;
   }
 
-  // Oil/Fatty Acids
-  if (text.match(/\bomega|fish oil|krill oil|cod liver|epa|dha|fatty acid|flax|chia\b/i)) {
+  // Oil/Fatty Acids (no word boundary before "omega" to catch "ProOmega", "Klean Omega-3", etc.)
+  if (text.match(/omega|fish oil|krill oil|cod liver|epa|dha|eicosapentaenoic|docosahexaenoic|marine triglyceride|fatty acid|flax|chia/i)) {
     return Category.OIL_FATTY_ACID;
   }
 
