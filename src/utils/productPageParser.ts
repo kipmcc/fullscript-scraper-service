@@ -28,45 +28,112 @@ export function parseMoreSection(html: string): {
   // Clean HTML (remove excessive whitespace, normalize)
   const cleanHtml = html.replace(/\s+/g, ' ').trim();
 
-  // Extract suggested use
-  const suggestedUseMatch = cleanHtml.match(
-    /<strong>Suggested Use:<\/strong>.*?<br[^>]*>(.*?)<br/i
+  // Improvement 6.1: More robust regex with multiline support
+  // Extract suggested use (handle multiline with /s flag)
+  const suggestedUseMatch = html.match(
+    /<strong>Suggested Use:<\/strong>(?:<br[^>]*>|\s+)(.*?)(?:<br|<\/p>|$)/is
   );
-  const suggestedUse = suggestedUseMatch?.[1]?.trim() || null;
+  const suggestedUse = suggestedUseMatch?.[1]
+    ?.replace(/<[^>]+>/g, '') // Remove HTML tags
+    .replace(/\s+/g, ' ') // Normalize whitespace
+    .trim() || null;
 
-  // Extract serving size
-  const servingSizeMatch = cleanHtml.match(
-    /<strong>Serving Size:<\/strong>\s*(.*?)<\/p>/i
+  // Extract serving size (handle multi-paragraph serving size)
+  const servingSizeMatch = html.match(
+    /<strong>Serving Size:<\/strong>\s*(.*?)(?:<br|<\/p>|$)/is
   );
-  const servingSize = servingSizeMatch?.[1]?.trim() || null;
+  const servingSize = servingSizeMatch?.[1]
+    ?.replace(/<[^>]+>/g, '') // Remove HTML tags
+    .replace(/\s+/g, ' ') // Normalize whitespace
+    .trim() || null;
 
   // Extract ingredients with amounts
+  // Improvement 3.1: Enhanced parsing for multi-line ingredients with standardization
   const ingredients: IngredientV2[] = [];
 
-  // Pattern 1: "Amount Per Serving" table format
-  // Example: <strong>Vitamin D3</strong> ... 1000 IU
-  const ingredientPattern = /<strong>([^<]+)<\/strong>\s*(?:\.{3,}|\s+)\s*([\d.]+)\s*(\w+)/g;
-  let match;
+  // Extract entire "Amount Per Serving" block first (preserve original HTML structure)
+  const amountPerServingMatch = html.match(/<strong>Amount Per Serving<\/strong>(?:<br[^>]*>|\s+)(.*?)(?=<p><strong>Other Ingredients|<\/p>|$)/is);
 
-  while ((match = ingredientPattern.exec(cleanHtml)) !== null) {
-    const [, name, amountStr, unit] = match;
-
-    // Skip headers like "Amount Per Serving"
-    if (name.toLowerCase().includes('amount per serving') ||
-        name.toLowerCase().includes('supplement facts')) {
-      continue;
+  if (amountPerServingMatch) {
+    const block = amountPerServingMatch[1];
+    
+    // Split by </p> tags to get individual ingredient paragraphs
+    // Handle both <p> tags and <br> tags as separators
+    const ingredientBlocks = block.split(/<\/p>\s*<p>/).filter(b => b.trim().length > 0);
+    
+    // If no <p> tags, try splitting by <br> tags
+    if (ingredientBlocks.length === 1) {
+      const brSplit = block.split(/<br[^>]*>/i).filter(b => b.trim().length > 0);
+      if (brSplit.length > 1) {
+        ingredientBlocks.push(...brSplit.slice(1)); // Skip first (header)
+      }
     }
 
-    const ingredient = parseIngredientLine(`${name} ${amountStr} ${unit}`);
-    if (ingredient) {
-      ingredients.push(ingredient);
+    for (const block of ingredientBlocks) {
+      // Extract name from <strong> tag
+      const nameMatch = block.match(/<strong>([^<]+)<\/strong>/);
+      if (!nameMatch) continue;
+
+      const name = nameMatch[1].trim();
+
+      // Skip headers
+      if (name.toLowerCase().includes('amount per serving') ||
+          name.toLowerCase().includes('supplement facts')) {
+        continue;
+      }
+
+      // Extract amount/unit (handle "..." or spaces)
+      const amountMatch = block.match(/(?:\.{3,}|\s+)\s*([\d.,]+)\s*([a-zA-Z%]+)/);
+      
+      // Extract standardization from <i> tag (improvement 3.1)
+      const standardizationMatch = block.match(/<i>([^<]+)<\/i>/);
+      const standardization = standardizationMatch ? standardizationMatch[1].trim() : null;
+
+      // Handle proprietary blends (no amount)
+      if (!amountMatch && (name.toLowerCase().includes('blend') || name.toLowerCase().includes('proprietary'))) {
+        ingredients.push({
+          name: name.trim(),
+          amount: null,
+          unit: null,
+          standardization: null,
+          equivalent: null,
+          parent_ingredient_id: null,
+        });
+        continue;
+      }
+
+      if (amountMatch) {
+        const amountStr = amountMatch[1].replace(',', '');
+        const unit = amountMatch[2].toLowerCase();
+        const amount = parseFloat(amountStr);
+
+        ingredients.push({
+          name: name.trim(),
+          amount: isNaN(amount) ? null : amount,
+          unit: unit,
+          standardization: standardization,
+          equivalent: standardization ? standardization : null,
+          parent_ingredient_id: null,
+        });
+      } else {
+        // Ingredient without amount (proprietary blend component)
+        ingredients.push({
+          name: name.trim(),
+          amount: null,
+          unit: null,
+          standardization: standardization,
+          equivalent: standardization ? standardization : null,
+          parent_ingredient_id: null,
+        });
+      }
     }
   }
 
-  // Pattern 2: Simple list format
+  // Pattern 2: Fallback to simple list format if no structured data found
   // Example: "EPA 800 mg, DHA 600 mg"
   if (ingredients.length === 0) {
     const listPattern = /([A-Z][a-z0-9 ()-]+)\s+([\d.]+)\s*(\w+)/g;
+    let match;
     while ((match = listPattern.exec(cleanHtml)) !== null) {
       const [, name, amountStr, unit] = match;
       const ingredient = parseIngredientLine(`${name} ${amountStr} ${unit}`);
@@ -76,13 +143,49 @@ export function parseMoreSection(html: string): {
     }
   }
 
-  // Extract other ingredients
-  const otherIngredientsMatch = cleanHtml.match(
-    /<strong>Other Ingredients:<\/strong>\s*(.*?)(?:<br|<\/p>)/i
+  // Improvement 6.2: Better Other Ingredients parsing
+  // Extract other ingredients (handle comma-separated lists with parentheses)
+  const otherIngredientsMatch = html.match(
+    /<strong>Other Ingredients:<\/strong>\s*(.*?)(?:<br|<\/p>|$)/is
   );
-  const otherIngredients = otherIngredientsMatch?.[1]
-    ?.replace(/<[^>]+>/g, '') // Remove HTML tags
-    .trim() || null;
+
+  let otherIngredients: string | null = null;
+  if (otherIngredientsMatch) {
+    const cleaned = otherIngredientsMatch[1]
+      .replace(/<[^>]+>/g, '') // Remove HTML tags
+      .replace(/&nbsp;/g, ' ') // Replace &nbsp;
+      .trim();
+
+    // Smart split that respects parentheses (e.g., "cellulose (water)")
+    // Split by comma, but only if not inside parentheses
+    const ingredients: string[] = [];
+    let current = '';
+    let depth = 0;
+
+    for (let i = 0; i < cleaned.length; i++) {
+      const char = cleaned[i];
+      if (char === '(') {
+        depth++;
+        current += char;
+      } else if (char === ')') {
+        depth--;
+        current += char;
+      } else if (char === ',' && depth === 0) {
+        if (current.trim()) {
+          ingredients.push(current.trim());
+        }
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    if (current.trim()) {
+      ingredients.push(current.trim());
+    }
+
+    otherIngredients = ingredients.length > 0 ? ingredients.join(', ') : cleaned;
+  }
 
   return {
     suggestedUse,

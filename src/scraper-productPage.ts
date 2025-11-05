@@ -118,11 +118,18 @@ export class ProductPageScraper {
 
       for (const sectionName of accordionSections) {
         try {
-          // Find the h5 header with this text
-          const header = this.page.locator(`h5:has-text("${sectionName}")`);
+          // Improvement 1.1: Use more reliable button finding with ancestor selector
+          const headerLocator = this.page.locator(`h5:has-text("${sectionName}")`);
+          
+          // Check if header exists
+          const headerCount = await headerLocator.count();
+          if (headerCount === 0) {
+            console.warn(`[ProductPageScraper] Header "${sectionName}" not found`);
+            continue;
+          }
 
-          // Navigate to parent button (h5 is inside the button)
-          const button = header.locator('..');
+          // Find button that contains the h5 header (using XPath ancestor)
+          const button = headerLocator.locator('xpath=ancestor::button').first();
 
           // Wait for button to be present and get expanded state
           const ariaExpanded = await button.getAttribute('aria-expanded', { timeout: 2000 }).catch(() => null);
@@ -130,7 +137,27 @@ export class ProductPageScraper {
           if (ariaExpanded === 'false') {
             console.log(`[ProductPageScraper] Expanding "${sectionName}" accordion`);
             await button.click({ timeout: 2000 });
-            await this.page.waitForTimeout(300); // Wait for expansion animation
+            
+            // Improvement 1.3: Increase wait time and verify expansion
+            await this.page.waitForTimeout(500); // Increased from 300ms
+            
+            // Improvement 1.2: Verify expansion with aria-expanded attribute
+            try {
+              await this.page.waitForFunction(
+                (sectionName) => {
+                  const headers = Array.from(document.querySelectorAll('h5'));
+                  const header = headers.find(h => h.textContent?.includes(sectionName));
+                  if (!header) return false;
+                  const button = header.closest('button');
+                  return button?.getAttribute('aria-expanded') === 'true';
+                },
+                sectionName,
+                { timeout: 5000 }
+              );
+              console.log(`[ProductPageScraper] ✓ Verified "${sectionName}" accordion expanded`);
+            } catch (verifyError) {
+              console.warn(`[ProductPageScraper] Could not verify expansion for "${sectionName}", continuing anyway`);
+            }
           } else {
             console.log(`[ProductPageScraper] "${sectionName}" accordion already expanded`);
           }
@@ -144,62 +171,204 @@ export class ProductPageScraper {
   }
 
   /**
-   * Extract product description
+   * Extract content from collapsed accordion (fallback strategy)
+   * Improvement 2.2: Extract from both expanded AND collapsed states
    */
-  private async extractDescription(): Promise<string> {
+  private async extractCollapsedContent(sectionName: string): Promise<string | null> {
     try {
-      const html = await this.page.evaluate(() => {
+      const html = await this.page.evaluate((sectionName) => {
         const headers = Array.from(document.querySelectorAll('h5'));
-        const header = headers.find(h => h.textContent?.includes('Description'));
+        const header = headers.find(h => h.textContent?.trim() === sectionName);
         if (!header) return null;
 
-        // Get parent button and its container
-        const button = header.closest('button');
-        if (!button) return null;
+        // Try to find content even if accordion is collapsed
+        // Some sites include content in DOM even when collapsed
+        const accordionContainer = header.closest('[role="button"], button')?.parentElement;
+        if (!accordionContainer) return null;
 
-        const container = button.parentElement;
-        if (!container) return null;
+        // Look for hidden content divs
+        const hiddenDivs = Array.from(accordionContainer.querySelectorAll('div[hidden], div[style*="display: none"], div[style*="display:none"]'));
+        for (const div of hiddenDivs) {
+          const text = div.textContent?.trim() || '';
+          if (text.length > 10) {
+            return div.innerHTML;
+          }
+        }
 
-        // Find content div (typically next sibling or within container)
-        const content = container.querySelector('div:not(:has(button))')
-          || Array.from(container.children).find(el => el.tagName === 'DIV' && !el.querySelector('button'));
+        return null;
+      }, sectionName);
 
-        return content?.innerHTML || null;
-      });
-
-      if (!html) {
-        console.warn('[ProductPageScraper] Description content not found in DOM');
-        return '';
-      }
-
-      return cleanHtmlText(html);
+      return html ? cleanHtmlText(html) : null;
     } catch (error: any) {
-      console.error('[ProductPageScraper] Description extraction error:', error.message);
-      return '';
+      return null;
     }
   }
 
   /**
+   * Extract content with logging and retry mechanism
+   * Improvement 4.1-4.2: Better error handling & logging
+   */
+  private async extractWithLogging<T>(
+    sectionName: string,
+    extractor: () => Promise<T>,
+    maxRetries: number = 2
+  ): Promise<T | null> {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const result = await extractor();
+        if (result) {
+          console.log(`[ProductPageScraper] ✓ Extracted "${sectionName}": found`);
+          return result;
+        } else if (attempt === maxRetries - 1) {
+          console.warn(`[ProductPageScraper] ✗ Extracted "${sectionName}": not found (after ${maxRetries} attempts)`);
+        }
+      } catch (error: any) {
+        console.error(`[ProductPageScraper] ✗ Failed to extract "${sectionName}" (attempt ${attempt + 1}/${maxRetries}):`, error.message);
+        
+        if (attempt < maxRetries - 1) {
+          // Exponential backoff
+          await this.page.waitForTimeout(1000 * (attempt + 1));
+        }
+      }
+    }
+
+    // Log HTML context for debugging
+    try {
+      const html = await this.page.content();
+      const sectionIndex = html.indexOf(sectionName);
+      if (sectionIndex > 0) {
+        const context = html.substring(Math.max(0, sectionIndex - 100), Math.min(html.length, sectionIndex + 500));
+        console.log(`[ProductPageScraper] HTML context for "${sectionName}":`, context.substring(0, 200) + '...');
+      }
+    } catch (error) {
+      // Ignore logging errors
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract product description
+   * Improvement 2.1: Use page.evaluate with direct DOM access and multiple selector strategies
+   * Improvement 2.2: Fallback to collapsed content extraction
+   */
+  private async extractDescription(): Promise<string> {
+    // Try expanded first, then fallback to collapsed
+    const expandedContent = await this.extractWithLogging('Description', async () => {
+      const html = await this.page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('h5'));
+        const descHeader = headers.find(h => h.textContent?.trim() === 'Description');
+        if (!descHeader) return null;
+
+        // Find the accordion container (parent of parent)
+        const accordionContainer = descHeader.closest('[role="button"], button')?.parentElement;
+        if (!accordionContainer) return null;
+
+        // Improvement 5.1: Try multiple selector strategies
+        const contentSelectors = [
+          '[class*="Collapsible"]',
+          '[class*="accordion-content"]',
+          'div:has(p)',
+          'div:not(:has(button)):not(:has(h5))',
+        ];
+
+        for (const selector of contentSelectors) {
+          const content = accordionContainer.querySelector(selector);
+          if (content && content.textContent?.trim().length > 10) {
+            return content.innerHTML;
+          }
+        }
+
+        // Fallback: Find div with substantial content
+        const allDivs = Array.from(accordionContainer.querySelectorAll('div'));
+        const contentDiv = allDivs.find(div => {
+          const text = div.textContent?.trim() || '';
+          return text.length > 10 && 
+                 !div.querySelector('button') && 
+                 !div.querySelector('h5') &&
+                 div !== descHeader.parentElement;
+        });
+
+        return contentDiv?.innerHTML || null;
+      });
+
+      if (!html) {
+        return null;
+      }
+
+      return cleanHtmlText(html);
+    });
+
+    if (expandedContent) {
+      return expandedContent;
+    }
+
+    // Fallback: Try collapsed content
+    const collapsedContent = await this.extractCollapsedContent('Description');
+    return collapsedContent || '';
+  }
+
+  /**
    * Extract warnings/cautions
+   * Improvement 2.1: Use page.evaluate with direct DOM access
+   * Improvement 2.2: Fallback to collapsed content extraction
    */
   private async extractWarnings(): Promise<string | null> {
-    try {
-      // Look for Warnings section
-      const warningsSection = this.page.locator('h5:has-text("Warnings"), h5:has-text("Caution")').locator('..').locator('..').locator('...');
-      const warningsContent = warningsSection.locator('.css-1l74dbd-HTML-styles-GenericCollapsible-styles, p, div.text-content');
+    // Try expanded first, then fallback to collapsed
+    const expandedContent = await this.extractWithLogging('Warnings', async () => {
+      const html = await this.page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('h5'));
+        const warningsHeader = headers.find(h => 
+          h.textContent?.trim() === 'Warnings' || 
+          h.textContent?.trim() === 'Caution'
+        );
+        if (!warningsHeader) return null;
 
-      const html = await warningsContent.innerHTML({ timeout: 3000 }).catch(() => '');
+        // Find the accordion container
+        const accordionContainer = warningsHeader.closest('[role="button"], button')?.parentElement;
+        if (!accordionContainer) return null;
+
+        // Try multiple selector strategies
+        const contentSelectors = [
+          '[class*="Collapsible"]',
+          '[class*="accordion-content"]',
+          'div:has(p)',
+          'div:not(:has(button)):not(:has(h5))',
+        ];
+
+        for (const selector of contentSelectors) {
+          const content = accordionContainer.querySelector(selector);
+          if (content && content.textContent?.trim().length > 10) {
+            return content.innerHTML;
+          }
+        }
+
+        // Fallback: Find div with substantial content
+        const allDivs = Array.from(accordionContainer.querySelectorAll('div'));
+        const contentDiv = allDivs.find(div => {
+          const text = div.textContent?.trim() || '';
+          return text.length > 10 && 
+                 !div.querySelector('button') && 
+                 !div.querySelector('h5') &&
+                 div !== warningsHeader.parentElement;
+        });
+
+        return contentDiv?.innerHTML || null;
+      });
 
       if (html) {
         return cleanHtmlText(html);
       }
 
-      // Alternative: Parse from raw HTML (skip this - too slow)
       return null;
-    } catch (error) {
-      console.warn('[ProductPageScraper] Warnings not found:', error);
-      return null;
+    });
+
+    if (expandedContent) {
+      return expandedContent;
     }
+
+    // Fallback: Try collapsed content
+    return await this.extractCollapsedContent('Warnings');
   }
 
   /**
@@ -233,29 +402,28 @@ export class ProductPageScraper {
 
   /**
    * Extract certifications
+   * Improvement 7.1: Extract from both accordion and page badges
    */
   private async extractCertifications(): Promise<string[]> {
     try {
-      // Look for certification images
-      const certImages = await this.page
-        .locator('img[alt*="Certified"], img[alt*="Verified"], img[alt*="NSF"], img[alt*="GMP"], img[alt*="USP"]')
-        .all();
-
       const certifications: string[] = [];
 
-      for (const img of certImages) {
-        const alt = await img.getAttribute('alt');
-        if (alt) {
-          certifications.push(alt.trim());
-        }
-      }
+      // First try: Extract from Certifications accordion
+      const accordionCerts = await this.extractCertificationsFromAccordion();
+      certifications.push(...accordionCerts);
 
-      // Alternative: Parse from raw HTML
+      // Second try: Extract from page badges (top of page)
+      const pageCerts = await this.extractCertificationsFromBadges();
+      certifications.push(...pageCerts);
+
+      // Third try: Parse from raw HTML (fallback)
       if (certifications.length === 0) {
         const pageHtml = await this.page.content();
-        return parseCertifications(pageHtml);
+        const parsedCerts = parseCertifications(pageHtml);
+        certifications.push(...parsedCerts);
       }
 
+      // Remove duplicates and return
       return Array.from(new Set(certifications));
     } catch (error) {
       console.warn('[ProductPageScraper] Certifications not found:', error);
@@ -264,7 +432,97 @@ export class ProductPageScraper {
   }
 
   /**
+   * Extract certifications from Certifications accordion section
+   */
+  private async extractCertificationsFromAccordion(): Promise<string[]> {
+    try {
+      const html = await this.page.evaluate(() => {
+        const headers = Array.from(document.querySelectorAll('h5'));
+        const certHeader = headers.find(h => h.textContent?.trim() === 'Certifications');
+        if (!certHeader) return null;
+
+        const accordionContainer = certHeader.closest('[role="button"], button')?.parentElement;
+        if (!accordionContainer) return null;
+
+        // Try multiple selector strategies
+        const contentSelectors = [
+          '[class*="Collapsible"]',
+          '[class*="accordion-content"]',
+          'div:has(p)',
+          'div:not(:has(button)):not(:has(h5))',
+        ];
+
+        for (const selector of contentSelectors) {
+          const content = accordionContainer.querySelector(selector);
+          if (content && content.textContent?.trim().length > 10) {
+            return content.innerHTML;
+          }
+        }
+
+        return null;
+      });
+
+      if (html) {
+        // Parse certifications from HTML
+        const parsed = parseCertifications(html);
+        return parsed;
+      }
+
+      return [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * Extract certifications from page badges (top of page, not in accordion)
+   */
+  private async extractCertificationsFromBadges(): Promise<string[]> {
+    try {
+      const certifications: string[] = [];
+
+      // Look for certification images anywhere on the page
+      const certImages = await this.page
+        .locator('img[alt*="Certified"], img[alt*="Verified"], img[alt*="NSF"], img[alt*="GMP"], img[alt*="USP"], img[alt*="IFOS"]')
+        .all();
+
+      for (const img of certImages) {
+        const alt = await img.getAttribute('alt');
+        if (alt) {
+          const cleaned = alt.trim();
+          // Verify it's actually a certification
+          const lower = cleaned.toLowerCase();
+          if (lower.includes('certified') || lower.includes('verified') || 
+              lower.includes('nsf') || lower.includes('gmp') || 
+              lower.includes('usp') || lower.includes('ifos')) {
+            certifications.push(cleaned);
+          }
+        }
+      }
+
+      // Also look for text badges with certifications
+      const textBadges = await this.page
+        .locator('[class*="badge"], [class*="tag"], [class*="chip"]')
+        .allTextContents();
+
+      for (const badge of textBadges) {
+        const lower = badge.toLowerCase();
+        if (lower.includes('certified') || lower.includes('verified') || 
+            lower.includes('nsf') || lower.includes('gmp') || 
+            lower.includes('usp') || lower.includes('ifos')) {
+          certifications.push(badge.trim());
+        }
+      }
+
+      return certifications;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
    * Extract "More" section with supplement facts
+   * Improvement 2.1: Use page.evaluate with direct DOM access and multiple selector strategies
    */
   private async extractMoreSection(): Promise<{
     suggestedUse: string | null;
@@ -275,25 +533,44 @@ export class ProductPageScraper {
     try {
       const html = await this.page.evaluate(() => {
         const headers = Array.from(document.querySelectorAll('h5'));
-        const header = headers.find(h =>
-          h.textContent?.includes('More') ||
+        const moreHeader = headers.find(h =>
+          h.textContent?.trim() === 'More' ||
           h.textContent?.includes('Supplement Facts') ||
           h.textContent?.includes('Ingredients')
         );
 
-        if (!header) return null;
+        if (!moreHeader) return null;
 
-        const button = header.closest('button');
-        if (!button) return null;
+        // Find the accordion container
+        const accordionContainer = moreHeader.closest('[role="button"], button')?.parentElement;
+        if (!accordionContainer) return null;
 
-        const container = button.parentElement;
-        if (!container) return null;
+        // Try multiple selector strategies
+        const contentSelectors = [
+          '[class*="Collapsible"]',
+          '[class*="accordion-content"]',
+          'div:has(p)',
+          'div:not(:has(button)):not(:has(h5))',
+        ];
 
-        // Find content div
-        const content = container.querySelector('div:not(:has(button))')
-          || Array.from(container.children).find(el => el.tagName === 'DIV' && !el.querySelector('button'));
+        for (const selector of contentSelectors) {
+          const content = accordionContainer.querySelector(selector);
+          if (content && content.textContent?.trim().length > 10) {
+            return content.innerHTML;
+          }
+        }
 
-        return content?.innerHTML || null;
+        // Fallback: Find div with substantial content
+        const allDivs = Array.from(accordionContainer.querySelectorAll('div'));
+        const contentDiv = allDivs.find(div => {
+          const text = div.textContent?.trim() || '';
+          return text.length > 10 && 
+                 !div.querySelector('button') && 
+                 !div.querySelector('h5') &&
+                 div !== moreHeader.parentElement;
+        });
+
+        return contentDiv?.innerHTML || null;
       });
 
       if (html) {
