@@ -214,53 +214,52 @@ export class FullscriptScraper {
     });
     console.log('[DEBUG] Page structure:', JSON.stringify(debugInfo, null, 2));
 
-    // Wait for product cards to load
-    await this.page.waitForSelector('[data-testid="product-card"], .product-card, .product-item', {
+    // Wait for product cards to load (Fullscript uses flex layout with border)
+    await this.page.waitForSelector('div.flex.flex-col.rounded-lg.border', {
       timeout: 10000,
     }).catch(() => {
-      console.warn('[Scraper] Product cards not found, attempting alternative selectors...');
+      console.warn('[Scraper] Product cards not found with primary selector...');
     });
 
     // Extract raw product data from page
     const rawProducts = await this.page.evaluate(() => {
-      const productCards = document.querySelectorAll('[data-testid="product-card"], .product-card, .product-item, article');
+      // Fullscript product cards: <div class="flex flex-col rounded-lg border border-border p-4">
+      const productCards = document.querySelectorAll('div.flex.flex-col.rounded-lg.border');
       const extracted: any[] = [];
 
       productCards.forEach((card: Element) => {
         try {
-          // Extract brand
-          const brandEl = card.querySelector('[data-testid="brand"], .brand, .product-brand');
-          const brand = brandEl?.textContent?.trim() || 'Unknown Brand';
-
-          // Extract product name
-          const nameEl = card.querySelector('[data-testid="product-name"], .product-name, h2, h3, h4');
+          // Extract product name from h3 > a
+          // Structure: <h3 class="mb-0 truncate ..."><a href="...">ProOmega® 2000</a></h3>
+          const nameEl = card.querySelector('h3 a');
           const product_name = nameEl?.textContent?.trim() || 'Unknown Product';
 
-          // Extract description
-          const descEl = card.querySelector('[data-testid="description"], .description, p');
-          const description = descEl?.textContent?.trim();
+          // Extract brand from p.truncate (sibling of h3)
+          // Structure: <p class="truncate">Nordic Naturals</p>
+          const brandEl = card.querySelector('div.mb-4.overflow-x-hidden p.truncate');
+          const brand = brandEl?.textContent?.trim() || 'Unknown Brand';
+
+          // Extract product URL from first a tag or h3 > a
+          // Structure: <a href="/catalog/products/proomega-2000?variant=...">
+          const linkEl = card.querySelector('a[href*="/catalog/products/"], a[href*="/products/"]');
+          const product_url = linkEl?.getAttribute('href');
 
           // Extract image URL
+          // Structure: <img alt="ProOmega® 2000" src="https://assets.fullscript.io/...">
           const imgEl = card.querySelector('img');
           const image_url = imgEl?.getAttribute('src') || imgEl?.getAttribute('data-src');
 
-          // Extract product URL
-          const linkEl = card.querySelector('a[href*="/products/"]');
-          const product_url = linkEl?.getAttribute('href');
-
-          // Extract serving size / dose info
-          const servingEl = card.querySelector('[data-testid="serving"], .serving-size, .dosage');
+          // Extract serving size from combobox button
+          // Structure: <button role="combobox"><div><span>60 Softgels</span></div></button>
+          const servingEl = card.querySelector('button[role="combobox"] span');
           const serving_size = servingEl?.textContent?.trim();
 
-          // Extract ingredient facts (if visible on card)
-          const ingredientsEl = card.querySelector('[data-testid="ingredients"], .ingredients, .supplement-facts');
-          const ingredients_text = ingredientsEl?.textContent?.trim();
+          // Note: Description and ingredients are NOT on the card - would need to visit product page
+          const description = undefined;
+          const ingredients_text = undefined;
 
-          // Extract certifications
-          const certBadges = card.querySelectorAll('[data-testid="certification"], .badge, .certification');
-          const certifications = Array.from(certBadges)
-            .map(badge => badge.textContent?.trim())
-            .filter(Boolean);
+          // Note: Certifications are NOT visible on cards - would need product page
+          const certifications: string[] = [];
 
           extracted.push({
             brand,
@@ -363,8 +362,9 @@ export class FullscriptScraper {
     if (!this.page) throw new Error('Browser not initialized');
 
     try {
-      // Look for next page button
-      const nextButton = await this.page.$('[data-testid="next-page"], .pagination-next, button:has-text("Next")');
+      // Look for next page button (Fullscript pagination)
+      // Structure: <button class="w-8 h-8 flex items-center justify-center border border-gray-200 rounded-lg" aria-label="Next page">
+      const nextButton = await this.page.$('button[aria-label="Next page"]');
 
       if (!nextButton) {
         console.log('[Scraper] No next page button found');
