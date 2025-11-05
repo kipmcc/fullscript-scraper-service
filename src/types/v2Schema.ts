@@ -124,3 +124,21 @@ export interface FullscriptImportV2 {
   import_metadata: ImportMetadataV2;
   products: ProductV2[];
 }
+
+/**
+ * Product page data (scraped from detailed product pages)
+ * Used to enhance card-level data with full details
+ */
+export interface ProductPageData {
+  description: string;
+  warnings: string | null;
+  dietaryRestrictions: string[];
+  certifications: string[];
+  suggestedUse: string | null;
+  servingSize: string | null;
+  ingredients: IngredientV2[];
+  otherIngredients: string | null;
+  frontImageUrl: string | null;
+  backImageUrl: string | null;
+  dietaryTags: string[];
+}

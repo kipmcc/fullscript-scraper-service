@@ -26,6 +26,7 @@ import {
   extractKeyIngredientsText,
 } from './utils/ingredientParser';
 import { safeValidateProduct } from './utils/v2Validator';
+import { ProductPageScraper } from './scraper-productPage';
 
 const FULLSCRIPT_BASE_URL = 'https://fullscript.com';
 const FULLSCRIPT_LOGIN_URL = `${FULLSCRIPT_BASE_URL}/login`;
@@ -279,7 +280,15 @@ export class FullscriptScraper {
       return extracted;
     });
 
-    // Convert raw products to v2 schema
+    console.log(`[Scraper] Extracted ${rawProducts.length} raw products from catalog cards`);
+    return rawProducts;
+  }
+
+  /**
+   * Convert raw product data to v2 schema
+   * Called after Phase 2 product page scraping completes
+   */
+  private convertToV2Schema(rawProducts: any[]): ProductV2[] {
     const v2Products: ProductV2[] = [];
     const currentTime = new Date().toISOString();
 
@@ -326,11 +335,13 @@ export class FullscriptScraper {
 
           // Optional fields
           dose_per_unit: raw.serving_size,
-          recommended_dose_label: raw.serving_size,
+          recommended_dose_label: raw.suggested_use,
           key_ingredients_text,
           certifications: raw.certifications,
           notes: raw.description,
           front_label_image_url: raw.image_url,
+          back_label_image_url: raw.back_label_image_url,
+          allergen_info: raw.allergen_info,
         };
 
         // Calculate confidence score
@@ -351,7 +362,7 @@ export class FullscriptScraper {
       }
     }
 
-    console.log(`[Scraper] Extracted ${v2Products.length} products from page (v2 schema)`);
+    console.log(`[Scraper] Converted ${v2Products.length} products to v2 schema`);
     return v2Products;
   }
 
@@ -432,31 +443,24 @@ export class FullscriptScraper {
       // Navigate to catalog
       await this.navigateToCatalog(config);
 
-      // Scrape pages until limit reached
+      // Phase 1: Scrape catalog cards
+      console.log('[Scraper] Phase 1: Scraping catalog cards...');
       let pageCount = 0;
       let hasNextPage = true;
+      const rawProducts: any[] = [];
 
-      while (hasNextPage && allProducts.length < config.limit) {
+      while (hasNextPage && rawProducts.length < config.limit) {
         pageCount++;
         console.log(`[Scraper] Scraping page ${pageCount}...`);
 
         // Extract products from current page
         const pageProducts = await this.extractProductsFromPage();
-        allProducts.push(...pageProducts);
+        rawProducts.push(...pageProducts);
 
-        console.log(`[Scraper] Total products: ${allProducts.length}/${config.limit}`);
-
-        // Update progress
-        await supabase
-          .from('fullscript_imports')
-          .update({
-            total_products: allProducts.length,
-            successful_products: allProducts.length,
-          })
-          .eq('id', importId);
+        console.log(`[Scraper] Total products: ${rawProducts.length}/${config.limit}`);
 
         // Check if we've reached the limit
-        if (allProducts.length >= config.limit) {
+        if (rawProducts.length >= config.limit) {
           console.log('[Scraper] Reached product limit');
           break;
         }
@@ -470,7 +474,92 @@ export class FullscriptScraper {
       }
 
       // Trim to exact limit
-      const finalProducts = allProducts.slice(0, config.limit);
+      const limitedRawProducts = rawProducts.slice(0, config.limit);
+
+      // Phase 2: Scrape product pages for detailed data
+      console.log(`[Scraper] Phase 2: Scraping ${limitedRawProducts.length} product pages for detailed data...`);
+
+      if (!this.page) throw new Error('Browser not initialized for Phase 2');
+      const productPageScraper = new ProductPageScraper(this.page);
+
+      for (let i = 0; i < limitedRawProducts.length; i++) {
+        const raw = limitedRawProducts[i];
+
+        if (!raw.product_url) {
+          console.warn(`[Scraper] Skipping product ${i + 1}/${limitedRawProducts.length}: No URL for "${raw.product_name}"`);
+          continue;
+        }
+
+        try {
+          // Build full URL if needed
+          const fullUrl = raw.product_url.startsWith('http')
+            ? raw.product_url
+            : `${FULLSCRIPT_BASE_URL}${raw.product_url}`;
+
+          console.log(`[Scraper] [${i + 1}/${limitedRawProducts.length}] Scraping product page: ${raw.product_name}`);
+
+          // Scrape product page with timeout
+          const productPageData = await Promise.race([
+            productPageScraper.scrapeProductPage(fullUrl),
+            new Promise<null>((_, reject) =>
+              setTimeout(() => reject(new Error('Product page scraping timeout')), 15000)
+            ),
+          ]);
+
+          if (productPageData) {
+            // Merge product page data into raw product
+            raw.description = productPageData.description || raw.description;
+            raw.certifications = productPageData.certifications.length > 0
+              ? productPageData.certifications
+              : raw.certifications;
+            raw.serving_size = productPageData.servingSize || raw.serving_size;
+            raw.suggested_use = productPageData.suggestedUse;
+
+            // Use product page ingredients if available (higher quality)
+            if (productPageData.ingredients.length > 0) {
+              raw.ingredients_text = productPageData.ingredients
+                .map(i => `${i.name} ${i.amount || ''}${i.unit || ''}`.trim())
+                .join(', ');
+            }
+
+            // Merge allergen info from dietary restrictions
+            if (productPageData.dietaryRestrictions.length > 0) {
+              raw.allergen_info = productPageData.dietaryRestrictions.join(', ');
+            }
+
+            // Add back label image if available
+            if (productPageData.backImageUrl) {
+              raw.back_label_image_url = productPageData.backImageUrl;
+            }
+
+            // Update front image if better quality available
+            if (productPageData.frontImageUrl) {
+              raw.image_url = productPageData.frontImageUrl;
+            }
+
+            console.log(`[Scraper] ✓ Successfully scraped ${raw.product_name}`);
+          }
+
+          // Rate limiting: 2-3 seconds between product pages
+          await randomDelay(2000, 3000);
+        } catch (error: any) {
+          console.error(`[Scraper] ✗ Error scraping product page for "${raw.product_name}":`, error.message);
+          // Continue with card-level data (Phase 1)
+        }
+
+        // Update progress
+        await supabase
+          .from('fullscript_imports')
+          .update({
+            total_products: i + 1,
+            successful_products: i + 1,
+          })
+          .eq('id', importId);
+      }
+
+      // Phase 3: Convert to v2 schema
+      console.log('[Scraper] Phase 3: Converting to v2 schema...');
+      const finalProducts = this.convertToV2Schema(limitedRawProducts);
 
       // Wrap in v2 schema
       const importResult: FullscriptImportV2 = {
